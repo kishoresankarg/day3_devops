@@ -1,4 +1,4 @@
-name: Deploy to EC2
+name: CI/CD - MultiStage Build & Deploy to EC2
 
 on:
   push:
@@ -6,45 +6,61 @@ on:
       - master
 
 jobs:
-  deploy:
+  build-scan-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout Repository
-      - name: Checkout Code
-        uses: actions/checkout@v4
+    # 1️⃣ Checkout Code
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
-      # Step 2: Login to DockerHub
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+    # 2️⃣ Login to DockerHub
+    - name: Login to DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Step 3: Pull Docker Image (Validation Step)
-      - name: Pull Docker Image
-        run: docker pull kishoresankarg/my-html-app
+    # 3️⃣ Build Multi-Stage Docker Image
+    - name: Build Docker Image
+      run: |
+        docker build -t kishoresankarg/my-html-app:latest .
 
-      # Step 4: SSH into EC2 and Deploy
-      - name: SSH and Deploy
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          port: 22
-          script: |
-            echo "Removing old container if exists..."
-            sudo docker rm -f myapp || true
+    # 4️⃣ Security Scan using Trivy
+    - name: Run Trivy Vulnerability Scan
+      uses: aquasecurity/trivy-action@0.20.0
+      with:
+        image-ref: kishoresankarg/my-html-app:latest
+        format: table
+        exit-code: 1
+        ignore-unfixed: true
+        severity: CRITICAL,HIGH
 
-            echo "Pulling latest Docker image..."
-            sudo docker pull kishoresankarg/my-html-app
+    # 5️⃣ Push Image to DockerHub
+    - name: Push Docker Image
+      run: |
+        docker push kishoresankarg/my-html-app:latest
 
-            echo "Starting new container..."
-            sudo docker run -d \
-              -p 80:80 \
-              --restart always \
-              --name myapp \
-              kishoresankarg/my-html-app
+    # 6️⃣ Deploy to EC2 via SSH
+    - name: Deploy on EC2 Server
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_SSH_KEY }}
+        port: 22
+        script: |
+          echo "Stopping and removing old container..."
+          sudo docker rm -f myapp || true
 
-            echo "Deployment completed successfully!"
+          echo "Pulling latest image..."
+          sudo docker pull kishoresankarg/my-html-app:latest
+
+          echo "Starting new container..."
+          sudo docker run -d \
+            -p 80:80 \
+            --restart always \
+            --name myapp \
+            kishoresankarg/my-html-app:latest
+
+          echo "Deployment completed successfully!"
