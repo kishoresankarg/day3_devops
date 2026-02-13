@@ -1,0 +1,66 @@
+name: CI/CD - Build, Scan and Deploy to EC2
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-scan-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1️⃣ Checkout Code
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # 2️⃣ Login to DockerHub
+    - name: Login to DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # 3️⃣ Build Docker Image
+    - name: Build Docker Image
+      run: |
+        docker build -t kishoresankarg/my-html-app:latest .
+
+    # 4️⃣ Security Scan (Trivy)
+    - name: Run Trivy Security Scan
+      uses: aquasecurity/trivy-action@0.20.0
+      with:
+        image-ref: kishoresankarg/my-html-app:latest
+        format: table
+        exit-code: 1
+        ignore-unfixed: true
+        severity: CRITICAL,HIGH
+
+    # 5️⃣ Push Image to DockerHub
+    - name: Push Docker Image
+      run: |
+        docker push kishoresankarg/my-html-app:latest
+
+    # 6️⃣ Deploy to EC2 via SSH
+    - name: SSH and Deploy on EC2
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USER }}
+        key: ${{ secrets.EC2_SSH_KEY }}
+        port: 22
+        script: |
+          echo "Stopping and removing old container..."
+          sudo docker rm -f myapp || true
+
+          echo "Pulling latest image..."
+          sudo docker pull kishoresankarg/my-html-app:latest
+
+          echo "Starting new container..."
+          sudo docker run -d \
+            -p 80:80 \
+            --restart always \
+            --name myapp \
+            kishoresankarg/my-html-app:latest
+
+          echo "Deployment completed successfully!"

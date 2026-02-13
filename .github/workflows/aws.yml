@@ -1,0 +1,121 @@
+name: Multi-Stage CI/CD Pipeline - Build, Scan & Deploy
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+
+  # =========================
+  # 1️⃣ BUILD JOB
+  # =========================
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker Image (Multi-Stage Dockerfile)
+        run: |
+          docker build -t kishoresankarg/my-html-app:latest .
+
+      - name: Save Docker Image as Artifact
+        run: docker save kishoresankarg/my-html-app:latest -o image.tar
+
+      - name: Upload Image Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar
+
+
+  # =========================
+  # 2️⃣ SECURITY SCAN JOB
+  # =========================
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download Docker Image Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker Image
+        run: docker load -i image.tar
+
+      - name: Run Trivy Scan
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: kishoresankarg/my-html-app:latest
+          format: table
+          exit-code: 1
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+
+  # =========================
+  # 3️⃣ PUSH JOB
+  # =========================
+  push:
+    runs-on: ubuntu-latest
+    needs: security-scan
+
+    steps:
+      - name: Download Docker Image Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker Image
+        run: docker load -i image.tar
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker Image
+        run: docker push kishoresankarg/my-html-app:latest
+
+
+  # =========================
+  # 4️⃣ DEPLOY JOB
+  # =========================
+  deploy:
+    runs-on: ubuntu-latest
+    needs: push
+
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script: |
+            echo "Stopping old container..."
+            sudo docker rm -f myapp || true
+
+            echo "Pulling latest image..."
+            sudo docker pull kishoresankarg/my-html-app:latest
+
+            echo "Starting new container..."
+            sudo docker run -d \
+              -p 80:80 \
+              --restart always \
+              --name myapp \
+              kishoresankarg/my-html-app:latest
+
+            echo "Deployment completed successfully!"
